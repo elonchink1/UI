@@ -1,200 +1,136 @@
---# Ultimate Rendering API v3.0
-local RenderAPI = {
-    _objects = setmetatable({}, {__mode = "k"}),
-    _gradients = {},
-    _highlights = {},
-    _connections = {}
+
+local Render = {}
+
+local RunService = game:GetService("RunService")
+local Camera = workspace.CurrentCamera
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+export type Renderer = {
+    origin: Vector3,
+    size: Vector2,
+    distance: number,
+    part: BasePart,
+    drawings: { [string]: any },
+    update: (self: Renderer) -> (),
 }
 
--- Services
-local RunService = game:GetService("RunService")
-local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
+local renderers = {}
 
--- Gradient animation system
-local function AnimateGradient(gradient, speed, colors)
-    local t = 0
-    local conn = RunService.Heartbeat:Connect(function(dt)
-        t = (t + dt * speed) % 1
-        local colorSequence = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, colors[1]:Lerp(colors[2], t)),
-            ColorSequenceKeypoint.new(1, colors[3]:Lerp(colors[4], t))
-        })
-        gradient.Color = colorSequence
-        gradient.Rotation = gradient.Rotation + dt * 10
-    end)
-    table.insert(RenderAPI._connections, conn)
-end
-
--- Cleanup system
-function RenderAPI.Cleanup()
-    for target, data in pairs(RenderAPI._objects) do
-        for _, drawing in pairs(data.drawings or {}) do
-            pcall(function() drawing:Remove() end)
-        end
-        if data.gradient then
-            pcall(function() data.gradient:Destroy() end)
-        end
-    end
-    
-    for _, highlight in pairs(RenderAPI._highlights) do
-        pcall(function() highlight:Destroy() end)
-    end
-    
-    for _, conn in pairs(RenderAPI._connections) do
-        pcall(function() conn:Disconnect() end)
-    end
-    
-    table.clear(RenderAPI._objects)
-    table.clear(RenderAPI._gradients)
-    table.clear(RenderAPI._highlights)
-    table.clear(RenderAPI._connections)
-end
-
--- Main ESP creation
-function RenderAPI.AddESP(target, options)
-    if not target:IsA("BasePart") then return end
-
-    -- Create all visual elements
-    local elements = {
-        box = Drawing.new("Square"),
-        tracer = Drawing.new("Line"),
-        text = Drawing.new("Text"),
-        healthBar = options.HealthBar and Drawing.new("Line") or nil,
-        gradient = nil
+function Render.CreateRenderer(size: {x: number, y: number}, distance: number, part: BasePart)
+    local newRenderer: Renderer = {
+        origin = Vector3.new(),
+        size = Vector2.new(size.x, size.y),
+        distance = distance,
+        part = part,
+        drawings = {}
     }
 
-    -- Configure elements
-    elements.box.Visible = false
-    elements.box.Color = options.BoxColor or Color3.new(1, 0, 0)
-    elements.box.Thickness = 2
-    elements.box.Filled = options.Filled or false
-    elements.box.ZIndex = 10
-
-    elements.tracer.Visible = false
-    elements.tracer.Color = options.TracerColor or Color3.new(1, 1, 0)
-    elements.tracer.Thickness = options.TracerThickness or 1
-    elements.tracer.ZIndex = 9
-
-    elements.text.Visible = false
-    elements.text.Color = options.TextColor or Color3.new(1, 1, 1)
-    elements.text.Size = options.TextSize or 16
-    elements.text.Center = true
-    elements.text.Outline = true
-    elements.text.ZIndex = 11
-
-    if elements.healthBar then
-        elements.healthBar.Visible = false
-        elements.healthBar.Thickness = options.HealthBarThickness or 3
-        elements.healthBar.ZIndex = 12
-    end
-
-    -- Create gradient if specified
-    if options.Gradient then
-        local billboard = Instance.new("BillboardGui")
-        billboard.Size = UDim2.new(options.Gradient.Size or 2, 0, options.Gradient.Size or 2, 0)
-        billboard.AlwaysOnTop = true
-        billboard.Adornee = target
-        billboard.Parent = target
-
-        local frame = Instance.new("Frame")
-        frame.Size = UDim2.new(1, 0, 1, 0)
-        frame.BackgroundTransparency = options.Gradient.Transparency or 0.5
-        frame.Parent = billboard
-
-        local gradient = Instance.new("UIGradient")
-        gradient.Rotation = options.Gradient.Rotation or 0
-        gradient.Parent = frame
-
-        -- Animate gradient if colors are provided
-        if options.Gradient.Colors and #options.Gradient.Colors >= 4 then
-            AnimateGradient(gradient, options.Gradient.Speed or 0.5, options.Gradient.Colors)
-        else
-            gradient.Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, options.Gradient.Color1 or Color3.new(1, 0, 0)),
-                ColorSequenceKeypoint.new(1, options.Gradient.Color2 or Color3.new(0, 0, 1))
-            })
-        end
-
-        elements.gradient = billboard
-    end
-
-    -- Create chams highlight
-    if options.Chams then
-        local highlight = Instance.new("Highlight")
-        highlight.FillColor = options.ChamColor or Color3.new(1, 0, 0)
-        highlight.OutlineColor = highlight.FillColor
-        highlight.FillTransparency = options.ChamTransparency or 0.3
-        highlight.OutlineTransparency = options.ChamOutlineTransparency or 0
-        highlight.Adornee = target
-        highlight.Parent = target
-        RenderAPI._highlights[target] = highlight
-    end
-
-    -- Store references
-    RenderAPI._objects[target] = {
-        elements = elements,
-        options = options
-    }
-
-    -- Update loop
-    local conn = RunService.Heartbeat:Connect(function()
-        if not target or not target.Parent then
-            RenderAPI.Cleanup()
-            return
-        end
-
-        local character = target:IsA("Model") and target or target:FindFirstAncestorOfClass("Model")
-        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-        if not humanoid then return end
-
-        local player = Players:GetPlayerFromCharacter(character)
-        if options.TeamCheck and player and player.Team == LocalPlayer.Team then
-            for _, element in pairs(elements) do
-                if element then element.Visible = false end
+    function newRenderer:update()
+        if not self.part or not self.part:IsDescendantOf(workspace) then
+            for _, drawing in pairs(self.drawings) do
+                drawing:Remove()
             end
+            renderers[self] = nil
             return
         end
 
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        if not rootPart then return end
+        local screenPos, onScreen = Camera:WorldToViewportPoint(self.part.Position)
+        if onScreen and (Camera.CFrame.Position - self.part.Position).Magnitude <= self.distance then
+            local distance = math.floor((Camera.CFrame.Position - self.part.Position).Magnitude)
+            for _, drawing in pairs(self.drawings) do
+                drawing.Visible = true
 
-        local pos, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
-        if not onScreen then return end
+                if drawing.Type == "Square" or drawing.Type == "Quad" then
+                    drawing.Position = Vector2.new(screenPos.X, screenPos.Y)
 
-        -- Update all elements
-        local scale = 1000 / (pos.Z * math.tan(math.rad(Camera.FieldOfView * 0.5)) * 2)
-        
-        -- Box ESP
-        elements.box.Size = Vector2.new(scale, scale * 2)
-        elements.box.Position = Vector2.new(pos.X - elements.box.Size.X/2, pos.Y - elements.box.Size.Y/2)
-        elements.box.Visible = true
+                elseif drawing.Type == "Text" then
+                    if drawing._dynamicText then
+                        local txt = drawing._dynamicText
+                        if txt == "distance" then
+                            drawing.Text = tostring(distance).."m"
+                        elseif txt == "name" then
+                            drawing.Text = self.part.Parent and self.part.Parent.Name or "Unknown"
+                        end
+                    end
+                    drawing.Position = Vector2.new(screenPos.X, screenPos.Y) + (drawing._offset or Vector2.zero)
 
-        -- Tracer
-        elements.tracer.From = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y)
-        elements.tracer.To = Vector2.new(pos.X, pos.Y)
-        elements.tracer.Visible = true
-
-        -- Text
-        elements.text.Text = options.TextFormat and options.TextFormat(player, humanoid) or (player and player.Name or target.Name)
-        elements.text.Position = Vector2.new(pos.X, pos.Y - elements.box.Size.Y/2 - 20)
-        elements.text.Visible = true
-
-        -- Health Bar
-        if elements.healthBar then
-            elements.healthBar.From = Vector2.new(elements.box.Position.X, elements.box.Position.Y + elements.box.Size.Y + 5)
-            elements.healthBar.To = Vector2.new(
-                elements.box.Position.X + (elements.box.Size.X * (humanoid.Health/humanoid.MaxHealth)),
-                elements.healthBar.From.Y
-            )
-            elements.healthBar.Color = Color3.fromHSV(humanoid.Health/humanoid.MaxHealth * 0.3, 1, 1)
-            elements.healthBar.Visible = true
+                elseif drawing.Type == "Line" then
+                    local health = self.part.Parent:FindFirstChild("Humanoid") and self.part.Parent.Humanoid.Health or 0
+                    local maxHealth = self.part.Parent:FindFirstChild("Humanoid") and self.part.Parent.Humanoid.MaxHealth or 100
+                    drawing.From = Vector2.new(screenPos.X - self.size.X/2 - 5, screenPos.Y - self.size.Y/2)
+                    drawing.To = Vector2.new(
+                        screenPos.X - self.size.X/2 - 5, 
+                        screenPos.Y - self.size.Y/2 + (self.size.Y * (1 - math.clamp(health/maxHealth, 0, 1)))
+                    )
+                end
+            end
+        else
+            for _, drawing in pairs(self.drawings) do
+                drawing.Visible = false
+            end
         end
-    end)
+    end
 
-    table.insert(RenderAPI._connections, conn)
+    renderers[newRenderer] = true
+    return newRenderer
 end
 
-return RenderAPI
+function Render.new(props)
+    local renderer = props.renderer
+    local drawingType = props.type or "Square"
+
+    local drawing = Drawing.new(drawingType)
+    drawing.Color = props.color or Color3.fromRGB(255,255,255)
+    drawing.Thickness = props.thickness or 1
+    drawing.Size = props.size and Vector2.new(
+        renderer.size.X * props.size.x,
+        renderer.size.Y * props.size.y
+    ) or Vector2.new(renderer.size.X, renderer.size.Y)
+    drawing.Visible = false
+    drawing.Filled = props.filled or false
+    drawing.Transparency = props.transparency or 1
+    drawing.Type = drawingType
+
+    if drawingType == "Text" then
+        drawing.Text = props.text or ""
+        drawing.Size = props.textsize or 13
+        drawing.Center = true
+        drawing.Outline = props.outline or false
+        drawing._offset = props.offset or Vector2.zero
+        drawing._dynamicText = props.dynamicText
+    end
+
+    if drawingType == "Line" then
+        drawing.From = Vector2.zero
+        drawing.To = Vector2.zero
+    end
+
+    if props.gradient then
+        task.spawn(function()
+            local steps = props.gradient.steps or 5
+            local colors = {
+                props.gradient.one,
+                props.gradient.second,
+                props.gradient.third,
+            }
+            local idx = 1
+            while drawing do
+                drawing.Color = colors[idx]
+                idx = idx % #colors + 1
+                task.wait(1 / steps)
+            end
+        end)
+    end
+
+    renderer.drawings[tostring(drawing)] = drawing
+    return drawing
+end
+
+RunService.RenderStepped:Connect(function()
+    for renderer in pairs(renderers) do
+        renderer:update()
+    end
+end)
+
+return Render
